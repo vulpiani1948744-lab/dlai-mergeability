@@ -1,0 +1,37 @@
+# Benchmark A -- the controlled inter-task similarity axis.
+# Everything here is held fixed across regimes and seeds; only the task family
+# (semantic vs random CIFAR-100 splits) changes.
+name: benchmark_a
+
+seeds: [0, 1]
+
+backbone:
+  name: vit_tiny_patch16_224
+  # 128, not 224: measured with scripts/check_resolution.py. Linear-probe
+  # accuracy is 47.9 / 71.6 / 78.8 % at 64 / 128 / 224 for this backbone, so 64
+  # is unusable and 224 buys 7 points for 3.4x the compute. ResNet-18, the
+  # cross-architecture control, is within 1.2 points of its own ceiling at 128,
+  # so both backbones run at the same resolution and the control changes
+  # exactly one variable.
+  img_size: 128
+  pretrained: true
+
+data:
+  root: data
+  regimes: [semantic, random]
+  num_tasks: 5
+  split_seed: 0
+
+train:
+  epochs: 5
+  batch_size: 128
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_frac: 0.1
+  label_smoothing: 0.0
+  grad_clip: 1.0
+  eval_batch_size: 256
+
+output:
+  checkpoints: checkpoints
+  results: results/raw

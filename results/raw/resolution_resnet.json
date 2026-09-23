@@ -1,0 +1,35 @@
+{
+  "backbone": "resnet18",
+  "rows": [
+    {
+      "probe_acc": 0.48649999499320984,
+      "resolution": 64,
+      "task": "aquatic_life"
+    },
+    {
+      "probe_acc": 0.6054999828338623,
+      "resolution": 64,
+      "task": "flora_and_insects"
+    },
+    {
+      "probe_acc": 0.5665000081062317,
+      "resolution": 128,
+      "task": "aquatic_life"
+    },
+    {
+      "probe_acc": 0.7005000114440918,
+      "resolution": 128,
+      "task": "flora_and_insects"
+    },
+    {
+      "probe_acc": 0.5855000019073486,
+      "resolution": 224,
+      "task": "aquatic_life"
+    },
+    {
+      "probe_acc": 0.7070000171661377,
+      "resolution": 224,
+      "task": "flora_and_insects"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# Toy configuration used only to prove the pipeline is sound before the real
+# runs. Low resolution, one epoch, one seed. Never quoted in the report.
+name: smoke
+
+seeds: [0]
+
+backbone:
+  name: vit_tiny_patch16_224
+  img_size: 128
+  pretrained: true
+
+data:
+  root: data
+  regimes: [semantic]
+  num_tasks: 5
+  split_seed: 0
+
+train:
+  epochs: 1
+  batch_size: 128
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_frac: 0.1
+  grad_clip: 1.0
+  eval_batch_size: 256
+
+output:
+  checkpoints: checkpoints/smoke
+  results: results/raw/smoke

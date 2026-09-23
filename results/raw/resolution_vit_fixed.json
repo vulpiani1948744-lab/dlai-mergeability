@@ -1,0 +1,25 @@
+{
+  "backbone": "vit_tiny_patch16_224",
+  "rows": [
+    {
+      "probe_acc": 0.6790000200271606,
+      "resolution": 128,
+      "task": "aquatic_life"
+    },
+    {
+      "probe_acc": 0.7519999742507935,
+      "resolution": 128,
+      "task": "flora_and_insects"
+    },
+    {
+      "probe_acc": 0.7590000033378601,
+      "resolution": 224,
+      "task": "aquatic_life"
+    },
+    {
+      "probe_acc": 0.8159999847412109,
+      "resolution": 224,
+      "task": "flora_and_insects"
+    }
+  ]
+}
