@@ -29,7 +29,9 @@ from mergeability.finetune import finetune_task
 from mergeability.models import (
     TaskModel,
     build_backbone,
+    encoder_param_dict,
     encoder_state_dict,
+    freeze_batchnorm,
     task_vector,
 )
 from mergeability.probe import build_frozen_head
@@ -83,7 +85,11 @@ def main() -> None:
         f"params={sum(p.numel() for p in encoder0.parameters()) / 1e6:.2f}M"
     )
     encoder0.to(device)
-    theta0 = encoder_state_dict(encoder0)
+    theta0 = encoder_state_dict(encoder0)      # full state, buffers included
+    theta0_params = encoder_param_dict(encoder0)  # learnable parameters only
+    n_bn = freeze_batchnorm(encoder0)
+    if n_bn:
+        print(f"froze {n_bn} BatchNorm layers (running statistics held fixed)")
 
     ckpt_root = Path(cfg.output.checkpoints) / spec.name
     ckpt_root.mkdir(parents=True, exist_ok=True)
@@ -132,8 +138,8 @@ def main() -> None:
                     model, task, spec, device, cfg.train, probe_acc, seed=seed
                 )
 
-                theta_ft = encoder_state_dict(model)
-                tau = task_vector(theta_ft, theta0)
+                theta_ft = encoder_param_dict(model)
+                tau = task_vector(theta_ft, theta0_params)
                 torch.save({k: v.half() for k, v in tau.items()}, tau_path)
                 torch.save(
                     {k: v.detach().cpu() for k, v in head.state_dict().items()},

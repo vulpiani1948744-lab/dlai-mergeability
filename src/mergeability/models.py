@@ -83,9 +83,47 @@ class TaskModel(nn.Module):
 
 
 def encoder_state_dict(model: nn.Module) -> StateDict:
-    """Detached CPU copy of the encoder weights."""
+    """Detached CPU copy of the full encoder state, buffers included."""
     enc = model.encoder if isinstance(model, TaskModel) else model
     return {k: v.detach().cpu().clone() for k, v in enc.state_dict().items()}
+
+
+def encoder_param_dict(model: nn.Module) -> StateDict:
+    """Detached CPU copy of the encoder's *learnable parameters* only.
+
+    Task vectors are built from this, never from the full state dict. A state
+    dict also carries buffers -- for a ResNet, the BatchNorm ``running_mean``
+    and ``running_var`` statistics -- which are accumulated averages of the
+    data, not weights reached by gradient descent. Differencing them is
+    meaningless, and because variances are unbounded it also swamps the norm:
+    including them made ||tau|| read 14414 for ResNet-18 against 2.7 for
+    ViT-Tiny, which has no buffers at all.
+    """
+    enc = model.encoder if isinstance(model, TaskModel) else model
+    return {k: v.detach().cpu().clone() for k, v in enc.named_parameters()}
+
+
+def freeze_batchnorm(module: nn.Module) -> int:
+    """Hold every BatchNorm in eval mode; returns how many were frozen.
+
+    BatchNorm normalises by batch statistics while training and by running
+    statistics while evaluating, so the function the encoder computes changes
+    the moment training starts. Our heads are linear probes fitted on the
+    *pretrained encoder in eval mode* and then frozen, so that shift leaves the
+    head reading a distribution it was never fitted on: ResNet-18 opened at a
+    loss of 7.23 and ended fine-tuning 6 points *below* its own frozen probe.
+
+    Freezing BatchNorm keeps the read-out function stable, which is what the
+    linear-probe-then-freeze design requires. The affine weight and bias of each
+    BatchNorm stay trainable and are part of the task vector; only the running
+    statistics are held fixed.
+    """
+    frozen = 0
+    for m in module.modules():
+        if isinstance(m, nn.modules.batchnorm._BatchNorm):
+            m.eval()
+            frozen += 1
+    return frozen
 
 
 # --------------------------------------------------------------------------

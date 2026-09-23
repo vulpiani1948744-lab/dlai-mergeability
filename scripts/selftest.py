@@ -16,7 +16,13 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mergeability.data import _random_crop, batches, to_model_input
-from mergeability.models import apply_task_vector, flatten_state_dict, task_vector
+from mergeability.models import (
+    apply_task_vector,
+    encoder_param_dict,
+    flatten_state_dict,
+    freeze_batchnorm,
+    task_vector,
+)
 from mergeability.probe import fit_linear_probe
 
 PASSED, FAILED = [], []
@@ -161,6 +167,52 @@ def _():
     head = fit_linear_probe(feats, labels, num_classes=3, seed=0)
     acc = (head(feats).argmax(1) == labels).float().mean().item()
     assert acc > 0.95, f"accuracy {acc:.3f} -- scaler fold-back is wrong"
+
+
+@check("param dict excludes BatchNorm running statistics")
+def _():
+    # Regression: including running_mean/running_var made ||tau|| read 14414 for
+    # ResNet-18 against 2.7 for ViT-Tiny. They are data statistics, not weights.
+    net = nn.Sequential(nn.Conv2d(3, 4, 3), nn.BatchNorm2d(4))
+    params = encoder_param_dict(net)
+    leaked = [k for k in params if "running_" in k or "num_batches" in k]
+    assert not leaked, f"buffers leaked into the task vector: {leaked}"
+    assert any("1.weight" in k for k in params), "BN affine weight should stay trainable"
+
+
+@check("task vector over params is unaffected by drifting BN statistics")
+def _():
+    net = nn.Sequential(nn.Conv2d(3, 4, 3), nn.BatchNorm2d(4))
+    before = encoder_param_dict(net)
+    net.train()
+    for _ in range(5):  # move the running statistics without touching any weight
+        net(torch.randn(8, 3, 8, 8) * 50)
+    after = encoder_param_dict(net)
+    norm = torch.cat([v.reshape(-1) for v in task_vector(after, before).values()]).norm()
+    assert norm.item() < 1e-6, f"||tau|| = {norm.item():.4f} but no weight was updated"
+
+
+@check("freeze_batchnorm survives a later train() call")
+def _():
+    net = nn.Sequential(nn.Conv2d(3, 4, 3), nn.BatchNorm2d(4))
+    bn = net[1]
+    net.train()
+    n = freeze_batchnorm(net)
+    assert n == 1, f"froze {n} layers, expected 1"
+    assert not bn.training, "BatchNorm still in training mode"
+    assert net[0].training, "the rest of the network must stay in training mode"
+
+
+@check("frozen BatchNorm does not move its running statistics")
+def _():
+    net = nn.Sequential(nn.Conv2d(3, 4, 3), nn.BatchNorm2d(4))
+    bn = net[1]
+    net.train()
+    freeze_batchnorm(net)
+    before = bn.running_var.clone()
+    for _ in range(5):
+        net(torch.randn(8, 3, 8, 8) * 50)
+    assert torch.allclose(bn.running_var, before), "running statistics drifted"
 
 
 if __name__ == "__main__":

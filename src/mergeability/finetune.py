@@ -16,7 +16,7 @@ import torch.nn as nn
 
 from .data import TaskData, batches, to_model_input
 from .evaluation import test_accuracy
-from .models import BackboneSpec, TaskModel
+from .models import BackboneSpec, TaskModel, freeze_batchnorm
 from .utils import human_time
 
 
@@ -79,6 +79,10 @@ def finetune_task(
 
     for epoch in range(cfg.epochs):
         model.train()
+        # Re-freeze after every train() call: the frozen head was fitted on
+        # eval-mode features and is only valid while the encoder keeps
+        # computing that same function. See models.freeze_batchnorm.
+        freeze_batchnorm(model.encoder)
         running, seen = 0.0, 0
         for xb, yb in batches(
             task.x_train, task.y_train, cfg.batch_size, shuffle=True, generator=generator
