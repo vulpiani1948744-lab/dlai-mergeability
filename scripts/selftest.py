@@ -23,6 +23,8 @@ from mergeability.models import (
     freeze_batchnorm,
     task_vector,
 )
+from mergeability.merging import METHODS, dare, task_arithmetic, ties, weight_averaging
+from mergeability.merging.methods import _trim
 from mergeability.probe import fit_linear_probe
 
 PASSED, FAILED = [], []
@@ -213,6 +215,116 @@ def _():
     for _ in range(5):
         net(torch.randn(8, 3, 8, 8) * 50)
     assert torch.allclose(bn.running_var, before), "running statistics drifted"
+
+
+# --------------------------------------------------------------------------
+# merging algorithms
+# --------------------------------------------------------------------------
+
+def _taus(values):
+    """Build task vectors from plain lists, one key, for readable assertions."""
+    return [{"w": torch.tensor(v, dtype=torch.float32)} for v in values]
+
+
+@check("averaging equals task arithmetic with lambda = 1/T")
+def _():
+    # Stated in the module docstring and in the report; if it ever stops being
+    # true, one of the two implementations has drifted.
+    taus = _taus([[1.0, -2.0, 3.0], [0.5, 1.0, -1.0], [-1.5, 0.0, 2.0]])
+    a = weight_averaging(taus)["w"]
+    b = task_arithmetic(taus, scaling=1 / 3)["w"]
+    assert torch.allclose(a, b, atol=1e-6), f"{a} != {b}"
+
+
+@check("task arithmetic with lambda=1 on a single task vector is the identity")
+def _():
+    tau = _taus([[1.0, -2.0, 3.0]])
+    out = task_arithmetic(tau, scaling=1.0)["w"]
+    assert torch.allclose(out, tau[0]["w"]), f"{out}"
+
+
+@check("trim keeps exactly the top fraction by magnitude")
+def _():
+    flat = torch.tensor([0.1, -5.0, 0.2, 3.0, -0.3, 4.0, 0.05, -0.2, 0.15, 0.25])
+    out = _trim(flat, density=0.3)
+    kept = (out != 0).sum().item()
+    assert kept == 3, f"kept {kept}, expected 3"
+    assert set(out[out != 0].abs().tolist()) == {5.0, 4.0, 3.0}, f"kept the wrong ones: {out}"
+
+
+@check("trim with density=1 changes nothing")
+def _():
+    flat = torch.randn(64)
+    assert torch.equal(_trim(flat, 1.0), flat)
+
+
+@check("TIES reduces to averaging when every sign agrees")
+def _():
+    taus = _taus([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    a = ties(taus, density=1.0, scaling=1.0)["w"]
+    b = weight_averaging(taus)["w"]
+    assert torch.allclose(a, b, atol=1e-6), f"TIES {a} vs mean {b}"
+
+
+@check("TIES drops the minority sign instead of letting it cancel")
+def _():
+    # +3, +3, -1: the sum is positive, so the elected sign is +, and only the
+    # two agreeing entries are averaged -> 3.0. A plain mean would give 1.667.
+    taus = _taus([[3.0], [3.0], [-1.0]])
+    out = ties(taus, density=1.0, scaling=1.0)["w"].item()
+    assert abs(out - 3.0) < 1e-6, f"got {out}, expected 3.0 (plain mean would be 1.667)"
+
+
+@check("TIES elects the sign carrying the greater total magnitude")
+def _():
+    # +1, +1, -5: the negative side wins on total magnitude.
+    taus = _taus([[1.0], [1.0], [-5.0]])
+    out = ties(taus, density=1.0, scaling=1.0)["w"].item()
+    assert abs(out - (-5.0)) < 1e-6, f"got {out}, expected -5.0"
+
+
+@check("DARE with drop_rate=0 equals its base merger")
+def _():
+    taus = _taus([[1.0, -2.0, 3.0], [0.5, 1.0, -1.0]])
+    a = dare(taus, drop_rate=0.0, base="task_arithmetic", scaling=1.0)["w"]
+    b = task_arithmetic(taus, scaling=1.0)["w"]
+    assert torch.allclose(a, b, atol=1e-6), f"{a} != {b}"
+
+
+@check("DARE preserves the task vector in expectation")
+def _():
+    # Dropping p of the entries and rescaling survivors by 1/(1-p) leaves the
+    # mean unchanged. That rescaling is the whole trick; without it the merged
+    # vector would shrink by a factor of (1-p).
+    torch.manual_seed(0)
+    taus = [{"w": torch.full((20000,), 2.0)}]
+    out = dare(taus, drop_rate=0.9, base="task_arithmetic", scaling=1.0, seed=0)["w"]
+    assert abs(out.mean().item() - 2.0) < 0.1, f"mean drifted to {out.mean().item():.3f}"
+
+
+@check("every merger preserves keys and shapes")
+def _():
+    taus = [
+        {"a": torch.randn(3, 4), "b": torch.randn(7)},
+        {"a": torch.randn(3, 4), "b": torch.randn(7)},
+    ]
+    for name, fn in METHODS.items():
+        out = fn(taus)
+        assert sorted(out) == ["a", "b"], f"{name} returned keys {sorted(out)}"
+        for k in ("a", "b"):
+            assert out[k].shape == taus[0][k].shape, f"{name} changed the shape of {k}"
+
+
+@check("mergers reject mismatched task vectors")
+def _():
+    good = {"a": torch.randn(4)}
+    for bad, why in [({"b": torch.randn(4)}, "different keys"),
+                     ({"a": torch.randn(5)}, "different shapes")]:
+        try:
+            weight_averaging([good, bad])
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted task vectors with {why}")
 
 
 if __name__ == "__main__":
