@@ -4,12 +4,19 @@ Benchmark A of the project. CIFAR-100 is partitioned into 5 disjoint 20-class
 tasks under two regimes:
 
 * ``semantic`` -- each task is the union of 4 related CIFAR-100 superclasses,
-  so classes inside a task belong together and tasks are mutually distinct.
-* ``random``   -- the 100 fine classes are shuffled and cut into 5 groups,
-  so every task is an arbitrary mixture.
+  so classes inside a task belong together and the tasks demand genuinely
+  different features. Task vectors diverge; merging should be *hard*.
+* ``random``   -- the 100 fine classes are shuffled and cut into 5 groups, so
+  every task is a microcosm of the whole dataset and they all demand nearly the
+  same features. Task vectors align; merging should be *easy*.
+* ``mix25`` / ``mix50`` / ``mix75`` -- graded steps between the two, obtained by
+  reshuffling a fraction alpha of the classes away from their semantic home.
 
-The two regimes are the single variable we change on purpose: they set the
-inter-task similarity high or low while leaving everything else identical.
+Inter-task similarity is the single variable we change on purpose, and the
+mixing fraction turns it from a two-level contrast into a graded axis. That
+matters: with two levels a correlation between a signal and merging damage is
+really a comparison of two clusters, whereas a graded axis lets us ask whether
+the signal *tracks* the damage, which is the claim the project actually makes.
 
 Each task has exactly 10,000 training and 2,000 test images (20 classes x
 500/100 per class), so the training budget is uniform by construction and
@@ -157,6 +164,69 @@ def _semantic_task_classes(raw: dict) -> dict[str, list[int]]:
     return tasks
 
 
+# Mixing fraction per named regime: 0 is the pure semantic partition, 1 a
+# uniformly random one. The intermediate levels are what make the similarity
+# axis graded rather than binary.
+MIXING_LEVELS: dict[str, float] = {
+    "semantic": 0.00,
+    "mix25": 0.25,
+    "mix50": 0.50,
+    "mix75": 0.75,
+    "random": 1.00,
+}
+
+
+def _mixed_task_classes(
+    raw: dict, alpha: float, seed: int, prefix: str
+) -> dict[str, list[int]]:
+    """Semantic partition with a fraction ``alpha`` of the classes reshuffled.
+
+    A random subset of ``alpha * 100`` classes is chosen and their task
+    assignments are permuted among themselves. Permuting *within* the subset
+    keeps every task at exactly 20 classes, so task size never becomes a
+    confound: at any alpha the training budget is identical.
+
+    alpha = 0 leaves the semantic partition untouched; alpha = 1 permutes every
+    assignment, which is a uniformly random partition into 5 groups of 20.
+    """
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+
+    semantic = _semantic_task_classes(raw)
+    names = sorted(semantic)
+    assignment = {c: i for i, name in enumerate(names) for c in semantic[name]}
+
+    rng = np.random.default_rng(seed)
+    classes = np.array(sorted(assignment))
+    n_shuffled = int(round(alpha * len(classes)))
+    if n_shuffled:
+        chosen = rng.choice(classes, size=n_shuffled, replace=False)
+        labels = np.array([assignment[int(c)] for c in chosen])
+        for c, t in zip(chosen, rng.permutation(labels)):
+            assignment[int(c)] = int(t)
+
+    return {
+        f"{prefix}_{i}": sorted(c for c, t in assignment.items() if t == i)
+        for i in range(len(names))
+    }
+
+
+def semantic_purity(task_classes: dict[str, list[int]], raw: dict) -> float:
+    """Fraction of classes still grouped with their semantic siblings.
+
+    Used as a check that the mixing fraction does what it claims: purity should
+    fall monotonically as alpha rises.
+    """
+    semantic = _semantic_task_classes(raw)
+    home = {c: i for i, name in enumerate(sorted(semantic)) for c in semantic[name]}
+    total = matched = 0
+    for members in task_classes.values():
+        counts = np.bincount([home[c] for c in members], minlength=len(semantic))
+        matched += counts.max()
+        total += len(members)
+    return matched / total
+
+
 def _random_task_classes(num_tasks: int, seed: int) -> dict[str, list[int]]:
     rng = np.random.default_rng(seed)
     order = rng.permutation(100)
@@ -181,9 +251,18 @@ def build_tasks(
     if regime == "semantic":
         task_classes = _semantic_task_classes(raw)
     elif regime == "random":
+        # Kept as its own construction: 20 task vectors were already produced
+        # under it before the graded axis existed, and a uniformly random
+        # partition is a uniformly random partition either way.
         task_classes = _random_task_classes(num_tasks, split_seed)
+    elif regime in MIXING_LEVELS:
+        task_classes = _mixed_task_classes(
+            raw, MIXING_LEVELS[regime], split_seed, prefix=regime
+        )
     else:
-        raise ValueError(f"unknown regime {regime!r}, expected 'semantic' or 'random'")
+        raise ValueError(
+            f"unknown regime {regime!r}, expected one of {sorted(MIXING_LEVELS)}"
+        )
 
     tasks: list[TaskData] = []
     for name, fine_classes in task_classes.items():

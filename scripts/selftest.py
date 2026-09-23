@@ -15,7 +15,16 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mergeability.data import _random_crop, batches, to_model_input
+from mergeability.data import (
+    MIXING_LEVELS,
+    _random_crop,
+    _semantic_task_classes,
+    batches,
+    build_tasks,
+    load_cifar100_raw,
+    semantic_purity,
+    to_model_input,
+)
 from mergeability.models import (
     apply_task_vector,
     encoder_param_dict,
@@ -35,11 +44,24 @@ from mergeability.similarity import (
     tau_norm,
 )
 
-PASSED, FAILED = [], []
+PASSED, FAILED, SKIPPED = [], [], []
+
+DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+HAVE_DATA = (DATA_ROOT / "cifar-100-python").exists()
+
+
+def needs_data(fn):
+    """Mark a check that cannot run before CIFAR-100 has been downloaded."""
+    fn.needs_data = True
+    return fn
 
 
 def check(name: str):
     def deco(fn):
+        if getattr(fn, "needs_data", False) and not HAVE_DATA:
+            SKIPPED.append(name)
+            print(f"  skip  {name} (dataset not downloaded yet)")
+            return fn
         try:
             fn()
         except AssertionError as e:
@@ -452,7 +474,74 @@ def _():
     assert abs(tau_norm(t) - direct) < 1e-5
 
 
+# --------------------------------------------------------------------------
+# the graded similarity axis (needs CIFAR-100 on disk)
+# --------------------------------------------------------------------------
+
+def _all_regimes():
+    return {r: build_tasks(r, root=str(DATA_ROOT), download=False) for r in MIXING_LEVELS}
+
+
+@check("every regime partitions the 100 classes into 5 tasks of 20")
+@needs_data
+def _():
+    for regime, tasks in _all_regimes().items():
+        assert len(tasks) == 5, f"{regime}: {len(tasks)} tasks"
+        seen = sorted(c for t in tasks for c in t.fine_classes)
+        assert seen == list(range(100)), f"{regime}: coverage is broken"
+        for t in tasks:
+            assert t.num_classes == 20, f"{regime}/{t.name}: {t.num_classes} classes"
+
+
+@check("every regime gives every task the same training budget")
+@needs_data
+def _():
+    # Task size must never vary with the mixing fraction, or the axis would be
+    # confounded with how much data each task gets.
+    for regime, tasks in _all_regimes().items():
+        for t in tasks:
+            assert len(t.y_train) == 10000, f"{regime}/{t.name}: {len(t.y_train)} train"
+            assert len(t.y_test) == 2000, f"{regime}/{t.name}: {len(t.y_test)} test"
+
+
+@check("alpha=0 reproduces the semantic partition exactly")
+@needs_data
+def _():
+    raw = load_cifar100_raw(str(DATA_ROOT), download=False)
+    semantic = _semantic_task_classes(raw)
+    built = {t.name: t.fine_classes for t in build_tasks("semantic", root=str(DATA_ROOT), download=False)}
+    assert sorted(semantic.values()) == sorted(built.values()), "semantic partition drifted"
+
+
+@check("semantic purity falls monotonically as the mixing fraction rises")
+@needs_data
+def _():
+    # The check that the axis actually interpolates rather than just being
+    # differently named. Without this, "graded" would be an unverified claim.
+    raw = load_cifar100_raw(str(DATA_ROOT), download=False)
+    purity = {
+        r: semantic_purity({t.name: t.fine_classes for t in tasks}, raw)
+        for r, tasks in _all_regimes().items()
+    }
+    ordered = [purity[r] for r in sorted(MIXING_LEVELS, key=MIXING_LEVELS.get)]
+    assert ordered[0] == 1.0, f"alpha=0 purity is {ordered[0]}, expected 1.0"
+    for a, b in zip(ordered, ordered[1:]):
+        assert b <= a + 1e-9, f"purity went up: {ordered}"
+    assert ordered[0] - ordered[-1] > 0.5, f"axis barely moves: {ordered}"
+
+
+@check("an unknown regime is rejected rather than silently guessed")
+@needs_data
+def _():
+    try:
+        build_tasks("mix33", root=str(DATA_ROOT), download=False)
+    except ValueError:
+        return
+    raise AssertionError("accepted an undefined regime")
+
+
 if __name__ == "__main__":
     print("self-test\n")
-    print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
+    tail = f", {len(SKIPPED)} skipped" if SKIPPED else ""
+    print(f"\n{len(PASSED)} passed, {len(FAILED)} failed{tail}")
     sys.exit(1 if FAILED else 0)

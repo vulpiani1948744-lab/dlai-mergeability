@@ -22,6 +22,9 @@ backbone:
 
 data:
   root: data
+  # The cross-architecture control only needs the two extremes of the axis:
+  # it asks whether the predictor ranking survives a change of architecture,
+  # not how the ranking varies along the axis.
   regimes: [semantic, random]
   num_tasks: 5
   split_seed: 0
