@@ -4,6 +4,8 @@
 
 Project for *Deep Learning & Applied AI* (a.y. 2025/2026), Sapienza University of Rome.
 
+Repository: <https://github.com/vulpiani1948744-lab/dlai-mergeability>
+
 > Model merging combines models fine-tuned from a shared checkpoint into one multi-task model,
 > without retraining. It works often, and fails silently. We ask whether failure is predictable
 > **before** merging, from cheap signals computed on the individual checkpoints.
