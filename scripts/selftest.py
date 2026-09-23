@@ -26,6 +26,14 @@ from mergeability.models import (
 from mergeability.merging import METHODS, dare, task_arithmetic, ties, weight_averaging
 from mergeability.merging.methods import _trim
 from mergeability.probe import fit_linear_probe
+from mergeability.similarity import (
+    cosine_similarity,
+    linear_cka,
+    pairwise_summary,
+    sign_conflict_rate,
+    subspace_overlap,
+    tau_norm,
+)
 
 PASSED, FAILED = [], []
 
@@ -325,6 +333,123 @@ def _():
         except ValueError:
             continue
         raise AssertionError(f"accepted task vectors with {why}")
+
+
+# --------------------------------------------------------------------------
+# pre-merge signals
+# --------------------------------------------------------------------------
+
+@check("cosine of a task vector with itself is 1, with its negation -1")
+def _():
+    t = {"w": torch.randn(500)}
+    neg = {"w": -t["w"]}
+    assert abs(cosine_similarity(t, t) - 1.0) < 1e-5
+    assert abs(cosine_similarity(t, neg) + 1.0) < 1e-5
+
+
+@check("cosine is invariant to rescaling either task vector")
+def _():
+    # Rescaling changes ||tau|| but not direction; a signal that confused the
+    # two would be baseline b2 wearing a disguise.
+    a = {"w": torch.randn(500)}
+    b = {"w": torch.randn(500)}
+    plain = cosine_similarity(a, b)
+    scaled = cosine_similarity({"w": a["w"] * 17.0}, {"w": b["w"] * 0.03})
+    assert abs(plain - scaled) < 1e-5, f"{plain:.6f} vs {scaled:.6f}"
+
+
+@check("sign conflict is 0 against itself and 1 against its negation")
+def _():
+    t = {"w": torch.randn(500)}
+    neg = {"w": -t["w"]}
+    assert sign_conflict_rate(t, t) < 1e-6
+    assert abs(sign_conflict_rate(t, neg) - 1.0) < 1e-6
+
+
+@check("unweighted sign conflict of independent vectors is about one half")
+def _():
+    torch.manual_seed(0)
+    a, b = {"w": torch.randn(20000)}, {"w": torch.randn(20000)}
+    r = sign_conflict_rate(a, b, weighted=False)
+    assert 0.47 < r < 0.53, f"{r:.3f}"
+
+
+@check("sign conflict weighting follows magnitude, not coordinate count")
+def _():
+    # One huge coordinate agrees, many tiny ones disagree. Counting coordinates
+    # says "mostly conflict"; weighting by magnitude says the opposite, and for
+    # merging it is the magnitudes that do the damage.
+    a = {"w": torch.tensor([100.0] + [0.01] * 99)}
+    b = {"w": torch.tensor([100.0] + [-0.01] * 99)}
+    assert sign_conflict_rate(a, b, weighted=False) > 0.95
+    assert sign_conflict_rate(a, b, weighted=True) < 0.05
+
+
+@check("subspace overlap is 1 for identical updates, ~0 for orthogonal ones")
+def _():
+    torch.manual_seed(0)
+    a = {"w": torch.randn(32, 32)}
+    assert abs(subspace_overlap(a, a, k=4) - 1.0) < 1e-4
+    # a rank-4 update and another supported on disjoint rows
+    u = torch.zeros(32, 32); u[:4] = torch.randn(4, 32)
+    v = torch.zeros(32, 32); v[4:8] = torch.randn(4, 32)
+    assert subspace_overlap({"w": u}, {"w": v}, k=4) < 1e-4
+
+
+@check("subspace overlap skips 1-D parameters")
+def _():
+    a = {"w": torch.randn(16, 16), "bias": torch.randn(16)}
+    b = {"w": torch.randn(16, 16), "bias": torch.randn(16)}
+    assert 0.0 <= subspace_overlap(a, b, k=4) <= 1.0  # would be nan if bias leaked
+
+
+@check("CKA of a representation with itself is 1")
+def _():
+    x = torch.randn(200, 32)
+    assert abs(linear_cka(x, x) - 1.0) < 1e-8
+
+
+@check("CKA is invariant to rotation and isotropic scaling")
+def _():
+    # This invariance is the reason CKA works across independently trained
+    # models at all: two encoders that agree up to a rotation of their latent
+    # space are computing the same thing.
+    torch.manual_seed(0)
+    x = torch.randn(200, 32)
+    q, _ = torch.linalg.qr(torch.randn(32, 32))
+    assert abs(linear_cka(x, x @ q) - 1.0) < 1e-6, "not rotation invariant"
+    assert abs(linear_cka(x, x * 9.0) - 1.0) < 1e-6, "not scale invariant"
+
+
+@check("CKA is symmetric and low for independent representations")
+def _():
+    torch.manual_seed(0)
+    x, y = torch.randn(400, 32), torch.randn(400, 32)
+    assert abs(linear_cka(x, y) - linear_cka(y, x)) < 1e-8, "not symmetric"
+    assert linear_cka(x, y) < 0.3, f"independent features scored {linear_cka(x, y):.3f}"
+
+
+@check("CKA compares representations of different width")
+def _():
+    torch.manual_seed(0)
+    x = torch.randn(200, 32)
+    assert 0.0 <= linear_cka(x, torch.randn(200, 64)) <= 1.0
+
+
+@check("pairwise summary averages over all unordered pairs")
+def _():
+    taus = [{"w": torch.randn(64, 8)} for _ in range(4)]
+    out = pairwise_summary(taus)
+    assert out["num_tasks"] == 4.0
+    for key in ("cosine", "sign_conflict", "subspace_overlap", "mean_tau_norm"):
+        assert key in out and out[key] == out[key], f"{key} missing or nan"
+
+
+@check("tau_norm matches a direct norm computation")
+def _():
+    t = {"a": torch.randn(10), "b": torch.randn(3, 4)}
+    direct = torch.cat([t["a"], t["b"].reshape(-1)]).norm().item()
+    assert abs(tau_norm(t) - direct) < 1e-5
 
 
 if __name__ == "__main__":
