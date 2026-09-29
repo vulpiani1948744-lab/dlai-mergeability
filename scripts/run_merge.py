@@ -8,8 +8,13 @@ pre-merge signal computed from the task vectors of that subset.
 Nothing in the signals can see the merged model, so downstream they are
 predictions and not descriptions.
 
+The CSV is rewritten after every (regime, seed) group, so an interrupted run
+keeps every group it finished.
+
     uv run scripts/run_merge.py --config configs/benchmark_a.yaml
     uv run scripts/run_merge.py --config configs/benchmark_a.yaml --sizes 2 --tasks 4
+    uv run scripts/run_merge.py --config configs/benchmark_a.yaml --grid dare_sweep \
+        --out results/raw/merge_vit_dare_sweep.csv
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mergeability.config import ExperimentConfig
 from mergeability.data import build_tasks
-from mergeability.experiment import load_bundle, run_group
+from mergeability.experiment import GRIDS, load_bundle, run_group
 from mergeability.models import build_backbone
 from mergeability.similarity import build_probe_set
 from mergeability.utils import get_device, human_time, set_seed
@@ -40,8 +45,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tasks", type=int, default=None, help="use only the first N tasks")
     p.add_argument("--probe-per-task", type=int, default=400,
                    help="unlabelled probe images taken from each task's test split")
+    p.add_argument("--grid", choices=sorted(GRIDS), default="full",
+                   help="which algorithm/hyperparameter grid to run (default: full)")
     p.add_argument("--out", type=Path, default=Path("results/raw/merge_results.csv"))
     return p.parse_args()
+
+
+def write_rows(path: Path, rows: list[dict]) -> None:
+    """Write via a temporary file, so a kill mid-write never leaves a torn CSV."""
+    fields: list[str] = []
+    for r in rows:                      # union of keys, first-seen order
+        for k in r:
+            if k not in fields:
+                fields.append(k)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp.replace(path)
 
 
 def main() -> None:
@@ -58,7 +81,7 @@ def main() -> None:
     encoder, spec = build_backbone(cfg.backbone.name, cfg.backbone.img_size, pretrained=False)
     encoder.to(device).eval()
     print(f"backbone={spec.name}  img_size={spec.img_size}  device={device}")
-    print(f"subset sizes={tuple(args.sizes)}\n")
+    print(f"subset sizes={tuple(args.sizes)}  grid={args.grid}\n")
 
     started = time.time()
     rows: list[dict] = []
@@ -75,19 +98,10 @@ def main() -> None:
                   f"probe set {len(probe_images)} images", flush=True)
             bundle = load_bundle(Path(cfg.output.checkpoints), spec.name, regime, seed, spec, tasks)
             rows += run_group(bundle, encoder, probe_images, device,
-                              sizes=tuple(args.sizes), batch_size=cfg.train.eval_batch_size)
-            print()
-
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    fields: list[str] = []
-    for r in rows:                      # union of keys, first-seen order
-        for k in r:
-            if k not in fields:
-                fields.append(k)
-    with open(args.out, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
+                              sizes=tuple(args.sizes), batch_size=cfg.train.eval_batch_size,
+                              grid=GRIDS[args.grid])
+            write_rows(args.out, rows)
+            print(f"    saved {len(rows)} rows so far\n", flush=True)
 
     print(f"wrote {len(rows)} rows to {args.out}  ({human_time(time.time() - started)})")
 

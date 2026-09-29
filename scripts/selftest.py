@@ -32,6 +32,7 @@ from mergeability.models import (
     freeze_batchnorm,
     task_vector,
 )
+from mergeability.experiment import GRIDS
 from mergeability.merging import METHODS, dare, task_arithmetic, ties, weight_averaging
 from mergeability.merging.methods import _trim
 from mergeability.probe import fit_linear_probe
@@ -330,6 +331,18 @@ def _():
     taus = [{"w": torch.full((20000,), 2.0)}]
     out = dare(taus, drop_rate=0.9, base="task_arithmetic", scaling=1.0, seed=0)["w"]
     assert abs(out.mean().item() - 2.0) < 0.1, f"mean drifted to {out.mean().item():.3f}"
+
+
+@check("the dare_sweep grid is exactly what the full grid adds, nothing merged twice")
+def _():
+    # The first full run used the grid without the sweep; a dare_sweep run adds
+    # the rest. A config in both would be merged twice, one in neither never.
+    full = [(m, sorted(p.items())) for m, g in GRIDS["full"].items() for p in g]
+    sweep = [(m, sorted(p.items())) for m, g in GRIDS["dare_sweep"].items() for p in g]
+    assert len(set(map(str, full))) == len(full), "the full grid lists a config twice"
+    assert all(s in full for s in sweep), "dare_sweep holds a config the full grid lacks"
+    first_run = [c for c in full if c not in sweep]
+    assert len(first_run) == 11, f"first-run grid has {len(first_run)} configs, the CSVs have 11"
 
 
 @check("every merger preserves keys and shapes")

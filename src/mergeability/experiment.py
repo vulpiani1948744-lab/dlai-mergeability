@@ -33,11 +33,33 @@ from .similarity import linear_cka, pairwise_summary
 # because its performance depends strongly on it and quoting one arbitrary
 # value would compare our tuning against someone else's; DARE gets several
 # seeds because its drop is random.
+#
+# DARE needs a scaling sweep for the same reason. At a 0.9 drop rate the
+# surviving entries of different task vectors barely overlap, so the disjoint
+# mean of its TIES step has almost nothing to average and the merge is in effect
+# a *sum*. With scaling fixed at 1.0, the first full run showed DARE tracking
+# task arithmetic at lambda = 1 to within a few points, collapsing to near
+# chance at five tasks on ResNet-18 -- a verdict on an untuned scaling, not on
+# random sparsification. The added scalings use one seed: the spread across
+# DARE seeds (1-2 points) is small next to that effect.
+DARE_SCALING_SWEEP: list[dict] = [
+    {"drop_rate": 0.9, "density": 0.2, "scaling": s, "seed": 0} for s in (0.2, 0.3, 0.5)
+]
+
 METHOD_GRID: dict[str, list[dict]] = {
     "averaging": [{}],
     "task_arithmetic": [{"scaling": s} for s in (0.1, 0.2, 0.3, 0.5, 1.0)],
     "ties": [{"density": 0.2, "scaling": s} for s in (0.5, 1.0)],
-    "dare": [{"drop_rate": 0.9, "density": 0.2, "scaling": 1.0, "seed": s} for s in (0, 1, 2)],
+    "dare": [{"drop_rate": 0.9, "density": 0.2, "scaling": 1.0, "seed": s} for s in (0, 1, 2)]
+            + DARE_SCALING_SWEEP,
+}
+
+# Grids selectable with ``run_merge.py --grid``. "dare_sweep" holds exactly the
+# entries added to METHOD_GRID after the first full run, so that run plus a
+# dare_sweep run together cover the full grid, with nothing merged twice.
+GRIDS: dict[str, dict[str, list[dict]]] = {
+    "full": METHOD_GRID,
+    "dare_sweep": {"dare": DARE_SCALING_SWEEP},
 }
 
 
@@ -197,8 +219,13 @@ def run_group(
     sizes: tuple[int, ...] = (2, 3, 5),
     batch_size: int = 256,
     verbose: bool = True,
+    grid: dict[str, list[dict]] | None = None,
 ) -> list[dict]:
-    """Every subset x every algorithm for one (regime, seed) group."""
+    """Every subset x every algorithm for one (regime, seed) group.
+
+    ``grid`` defaults to the full METHOD_GRID; pass one of GRIDS to run a part.
+    """
+    grid = METHOD_GRID if grid is None else grid
     reference = reference_accuracies(bundle, encoder, device, batch_size)
     if verbose:
         ref = "  ".join(f"{k.split('_')[0]} {v * 100:.1f}%" for k, v in reference.items())
@@ -211,8 +238,8 @@ def run_group(
         signals = signals_for(bundle, subset, feats)
         taus = [bundle.taus[n] for n in subset]
 
-        for method, grid in METHOD_GRID.items():
-            for params in grid:
+        for method, method_grid in grid.items():
+            for params in method_grid:
                 merged = METHODS[method](taus, **params)
                 result = evaluate_merge(
                     bundle, encoder, subset, merged, reference, device, batch_size
@@ -229,6 +256,6 @@ def run_group(
                     **signals,
                 })
         if verbose:
-            best = max(r["normalized_acc"] for r in rows[-sum(len(g) for g in METHOD_GRID.values()):])
+            best = max(r["normalized_acc"] for r in rows[-sum(len(g) for g in grid.values()):])
             print(f"    {'+'.join(subset):<60} best normalized {best * 100:.1f}%", flush=True)
     return rows
