@@ -10,11 +10,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from mergeability.analysis import outcomes, partial_spearman, stratified_spearman
 from mergeability.data import (
     MIXING_LEVELS,
     _random_crop,
@@ -485,6 +488,69 @@ def _():
     t = {"a": torch.randn(10), "b": torch.randn(3, 4)}
     direct = torch.cat([t["a"], t["b"].reshape(-1)]).norm().item()
     assert abs(tau_norm(t) - direct) < 1e-5
+
+
+# --------------------------------------------------------------------------
+# analysis
+# --------------------------------------------------------------------------
+
+@check("stratified Spearman equals plain Spearman on a single stratum")
+def _():
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=50)
+    y = x + rng.normal(size=50)
+    ref = pd.Series(x).corr(pd.Series(y), method="spearman")
+    got = stratified_spearman(x, y, np.zeros(50))
+    assert abs(got - ref) < 1e-12, f"{got} != {ref}"
+
+
+@check("stratified Spearman ignores a trend that lives only between strata")
+def _():
+    # Inside each stratum y is unrelated to x; across strata both rise together.
+    # That shared rise is what "more tasks is worse" looks like, i.e. baseline b1.
+    rng = np.random.default_rng(1)
+    strata = np.repeat([0, 1, 2], 40)
+    x = strata * 10 + rng.normal(size=120)
+    y = strata * 10 + rng.normal(size=120)
+    pooled = pd.Series(x).corr(pd.Series(y), method="spearman")
+    within = stratified_spearman(x, y, strata)
+    assert pooled > 0.8 and abs(within) < 0.3, f"pooled {pooled:.2f}, within {within:.2f}"
+
+
+@check("partial rank correlation removes a shared driver")
+def _():
+    # x and y both follow z (think: both track the task-vector norm).
+    rng = np.random.default_rng(2)
+    z = rng.normal(size=200)
+    x = z + 0.3 * rng.normal(size=200)
+    y = z + 0.3 * rng.normal(size=200)
+    strata = np.zeros(200)
+    assert stratified_spearman(x, y, strata) > 0.8
+    got = partial_spearman(x, y, z, strata)
+    assert abs(got) < 0.2, f"partial rho {got:.2f} should vanish once z is removed"
+
+
+@check("tuned outcomes average DARE seeds before taking the best configuration")
+def _():
+    base = dict(backbone="b", regime="r", seed=0, subset="t1+t2", n_tasks=2,
+                cosine=0.1, sign_conflict=0.4, subspace_overlap=0.3, cka=0.9, drift=0.8,
+                mean_tau_norm=2.5, param_scaling=np.nan, param_density=np.nan,
+                param_drop_rate=np.nan, param_seed=np.nan)
+    dare = dict(method="dare", param_density=0.2, param_drop_rate=0.9)
+    rows = [
+        {**base, "method": "averaging", "normalized_acc": 0.90},
+        {**base, "method": "task_arithmetic", "param_scaling": 0.3, "normalized_acc": 0.80},
+        {**base, "method": "task_arithmetic", "param_scaling": 0.5, "normalized_acc": 0.95},
+        {**base, "method": "ties", "param_scaling": 1.0, "param_density": 0.2,
+         "normalized_acc": 0.85},
+        # scaling 1.0 over three seeds: one lucky draw, mean 0.70
+        *[{**base, **dare, "param_scaling": 1.0, "param_seed": s, "normalized_acc": a}
+          for s, a in [(0, 0.99), (1, 0.56), (2, 0.55)]],
+        {**base, **dare, "param_scaling": 0.3, "param_seed": 0, "normalized_acc": 0.80},
+    ]
+    o = outcomes(pd.DataFrame(rows)).iloc[0]
+    assert abs(o.task_arithmetic - 0.95) < 1e-12, "task arithmetic should take its best lambda"
+    assert abs(o.dare - 0.80) < 1e-12, f"DARE scored {o.dare}; 0.99 is crediting a lucky seed"
 
 
 # --------------------------------------------------------------------------
