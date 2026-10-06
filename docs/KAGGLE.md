@@ -15,7 +15,7 @@ has already been done. Since every task vector in this study has to be produced 
 conditions, running them on hardware whose speed drifts by 20x over a session is also a
 methodological risk, not just an inconvenience.
 
-All 48 fine-tunings are therefore produced on one machine, in one place, with one backend.
+All 70 fine-tunings (50 ViT-Tiny, 20 ResNet-18) are therefore produced on one machine, in one place, with one backend.
 
 ## One-time setup
 
@@ -30,7 +30,8 @@ All 48 fine-tunings are therefore produced on one machine, in one place, with on
 ## Running
 
 Run the cells in order. Cells 2–4 are cheap sanity checks and should all pass before any GPU time is
-spent; in particular the self-test must report **13 passed, 0 failed**.
+spent; in particular the self-test must report **0 failed** (its dataset checks are skipped until
+CIFAR-100 has been downloaded).
 
 Cell 5 prints the *measured* sustained throughput and the projected total. Read it before starting
 the long run: if the projection does not fit in a session, reduce `epochs` in the config rather than
@@ -47,10 +48,10 @@ follow-up notebook as a dataset. The archives are built by the last cell:
 
 | file | contents | approx. size |
 |---|---|---|
-| `task_vectors.zip` | `checkpoints/` — every tau, fp16 | ~700 MB |
-| `metrics.zip` | `results/` — per-task accuracies, JSON | < 1 MB |
+| `task_vectors.zip` | `checkpoints/` — every tau, fp16 | ~1 GB |
+| `results.zip` | `results/` — fine-tuning summaries and merge CSVs | < 5 MB |
 
-Only `metrics.zip` is needed to start the analysis. Download `task_vectors.zip` when you want to
+Only `results.zip` is needed to start the analysis. Download `task_vectors.zip` when you want to
 compute the weight-space predictors locally.
 
 ## Note on the local checkpoints
@@ -59,3 +60,10 @@ Any `checkpoints/` produced locally on MPS are **not** used. They are excluded b
 they never reach the Kaggle clone, and the run there starts from an empty directory. Mixing task
 vectors trained on different backends would introduce exactly the kind of confound this project is
 built to avoid.
+
+## Long runs: do not depend on the browser
+
+An interactive Kaggle session is tied to the browser tab: when the connection drops, the session can
+be stopped and anything not yet written to disk is lost. For long runs prefer `Save Version` →
+`Save & Run All`, which executes on Kaggle's side, and download every result file as soon as it is
+written. `run_merge.py` saves its CSV after every (regime, seed) group for the same reason.

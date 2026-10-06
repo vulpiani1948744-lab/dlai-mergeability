@@ -24,3 +24,9 @@ report/*.synctex.gz
 
 # os
 .DS_Store
+
+# local copy of the Kaggle task vectors
+kaggle_run/
+
+# editors
+.Rhistory
